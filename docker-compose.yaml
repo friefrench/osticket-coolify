@@ -1,0 +1,50 @@
+services:
+  osticket:
+    build: .
+    restart: unless-stopped
+    environment:
+      # --- Helpdesk ---
+      - OSTICKET_NAME=${OSTICKET_NAME:-Support}
+      - OSTICKET_EMAIL=${OSTICKET_EMAIL}
+      # --- Compte admin (cree automatiquement) ---
+      - ADMIN_FIRSTNAME=${ADMIN_FIRSTNAME:-Admin}
+      - ADMIN_LASTNAME=${ADMIN_LASTNAME:-Support}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-ostadmin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      # --- Base de donnees ---
+      - DB_HOST=db
+      - DB_NAME=${DB_NAME:-osticket}
+      - DB_USER=${DB_USER:-osticket}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - TABLE_PREFIX=${TABLE_PREFIX:-ost_}
+      # --- Divers ---
+      - OSTICKET_TIMEZONE=${OSTICKET_TIMEZONE:-Europe/Paris}
+      - OSTICKET_LANG=${OSTICKET_LANG:-en_US}
+    volumes:
+      - osticket_data:/var/www/html
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "80"
+
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      - MARIADB_DATABASE=${DB_NAME:-osticket}
+      - MARIADB_USER=${DB_USER:-osticket}
+      - MARIADB_PASSWORD=${DB_PASSWORD}
+      - MARIADB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+    volumes:
+      - osticket_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  osticket_data:
+  osticket_db:
