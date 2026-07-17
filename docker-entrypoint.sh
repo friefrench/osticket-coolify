@@ -5,57 +5,119 @@ WEBROOT=/var/www/html
 SRC=/usr/src/osticket
 PREFIX="${TABLE_PREFIX:-ost_}"
 
-# 1) Premier boot : on seme osTicket dans le webroot persistant (volume Coolify)
+log() { echo "[entrypoint] $*"; }
+
+# --- 1) Premier boot : on seme osTicket dans le webroot persistant ---
 if [ ! -f "$WEBROOT/main.inc.php" ]; then
-  echo "[entrypoint] Premier boot, copie d'osTicket dans $WEBROOT ..."
+  log "Premier boot, copie d'osTicket dans $WEBROOT ..."
   cp -a "$SRC/." "$WEBROOT/"
 fi
 
-# 2) Attente de la base de donnees
-echo "[entrypoint] Attente de la base ($DB_HOST) ..."
-tries=0
-until php -r '$c=@mysqli_connect(getenv("DB_HOST"),getenv("DB_USER"),getenv("DB_PASSWORD"),getenv("DB_NAME")); exit($c?0:1);' >/dev/null 2>&1; do
-  tries=$((tries + 1))
-  if [ "$tries" -ge 60 ]; then
-    echo "[entrypoint] Base injoignable apres 120s, on continue sans installer."
+# --- 2) Connexion a la base (on distingue "pas encore prete" de "mot de passe faux") ---
+db_ok=0
+db_error=""
+i=0
+log "Connexion a la base ($DB_HOST) ..."
+while [ "$i" -lt 60 ]; do
+  if out=$(php -r '
+        $c = @mysqli_connect(getenv("DB_HOST"), getenv("DB_USER"), getenv("DB_PASSWORD"), getenv("DB_NAME"));
+        if ($c) { echo "OK"; exit(0); }
+        echo mysqli_connect_error();
+        exit(1);
+      ' 2>/dev/null); then
+    db_ok=1
     break
   fi
+  db_error="$out"
+  # Inutile d'attendre 2 min si les identifiants sont refuses : ca ne changera pas.
+  case "$db_error" in
+    *"Access denied"*) break ;;
+  esac
+  i=$((i + 1))
   sleep 2
 done
 
-# 3) Installation headless si pas deja installe
-do_harden=0
-if [ -f "$WEBROOT/setup/ost-autoinstall.php" ]; then
-  already=$(php -r '
-    $c=@mysqli_connect(getenv("DB_HOST"),getenv("DB_USER"),getenv("DB_PASSWORD"),getenv("DB_NAME"));
-    if(!$c){echo "err";exit;}
-    $p=getenv("TABLE_PREFIX")?:"ost_";
-    $r=mysqli_query($c,"SHOW TABLES LIKE \x27".$p."config\x27");
-    echo ($r && mysqli_num_rows($r)>0)?"yes":"no";
-  ' 2>/dev/null)
-
-  if [ "$already" = "yes" ]; then
-    echo "[entrypoint] osTicket deja installe, on saute l'install."
-    do_harden=1
-  elif [ "$already" = "no" ]; then
-    echo "[entrypoint] Installation headless en cours ..."
-    if ( cd "$WEBROOT/setup" && php ost-autoinstall.php ); then
-      do_harden=1
-    else
-      echo "[entrypoint] Install ECHOUEE, on garde setup/ pour reessayer/manuel."
-    fi
-  else
-    echo "[entrypoint] Etat d'install indetermine (base KO), on garde setup/."
-  fi
-
-  # 4) Auto-durcissement (exigence osTicket) : supprimer setup/, verrouiller config
-  if [ "$do_harden" = "1" ]; then
-    echo "[entrypoint] Durcissement : suppression de setup/ et chmod 644 de la config."
-    rm -rf "$WEBROOT/setup"
-    [ -f "$WEBROOT/include/ost-config.php" ] && chmod 0644 "$WEBROOT/include/ost-config.php"
-  fi
+if [ "$db_ok" != "1" ]; then
+  echo "================================================================"
+  log "ERREUR : impossible de se connecter a la base de donnees."
+  log "Detail : $db_error"
+  case "$db_error" in
+    *"Access denied"*)
+      log ""
+      log "CAUSE LA PLUS PROBABLE : le volume de la base vient d'un"
+      log "deploiement precedent, avec un AUTRE mot de passe."
+      log "MariaDB ne cree l'utilisateur et son mot de passe qu'au tout"
+      log "premier demarrage sur un volume vide. Ensuite, la variable"
+      log "MARIADB_PASSWORD est IGNOREE : la base garde l'ancien mot de passe."
+      log ""
+      log "SOLUTION : supprime l'application ET ses volumes (osticket_db"
+      log "en particulier), puis redeploie. Supprimer l'application seule"
+      log "ne suffit pas, Coolify conserve les volumes."
+      ;;
+    *)
+      log "Verifie que le service 'db' demarre bien (logs du conteneur db)."
+      ;;
+  esac
+  echo "================================================================"
+  log "Apache demarre quand meme, mais osTicket renverra une erreur 500."
+  chown -R www-data:www-data "$WEBROOT"
+  exec "$@"
 fi
 
-# 5) Permissions + lancement d'Apache
+log "Base joignable."
+
+# --- 3) osTicket est-il deja installe ? (on interroge la base, pas des fichiers) ---
+tables=$(php -r '
+  $c = @mysqli_connect(getenv("DB_HOST"), getenv("DB_USER"), getenv("DB_PASSWORD"), getenv("DB_NAME"));
+  if (!$c) { echo "err"; exit; }
+  $p = getenv("TABLE_PREFIX") ?: "ost_";
+  $r = mysqli_query($c, "SHOW TABLES LIKE \x27" . $p . "config\x27");
+  echo ($r && mysqli_num_rows($r) > 0) ? "yes" : "no";
+' 2>/dev/null)
+
+if [ "$tables" = "no" ]; then
+  # Base vide -> (re)installation. Voie de secours : si setup/ a deja ete
+  # supprime par un boot precedent, on le restaure depuis l'image.
+  log "Base joignable mais vide, lancement de l'installation."
+  if [ ! -d "$WEBROOT/setup" ]; then
+    log "Restauration de setup/ depuis l'image (voie de secours)."
+    cp -a "$SRC/setup" "$WEBROOT/setup"
+  fi
+  # On repart d'une config vierge et inscriptible
+  cp "$SRC/include/ost-sampleconfig.php" "$WEBROOT/include/ost-config.php"
+  chmod 0666 "$WEBROOT/include/ost-config.php"
+
+  if ( cd "$WEBROOT/setup" && php ost-autoinstall.php ); then
+    log "Installation reussie. Durcissement : suppression de setup/, config en 644."
+    rm -rf "$WEBROOT/setup"
+    chmod 0644 "$WEBROOT/include/ost-config.php"
+  else
+    log "Installation ECHOUEE (voir les lignes [autoinstall] ci-dessus)."
+    log "setup/ est conserve pour permettre une reprise."
+  fi
+
+elif [ "$tables" = "yes" ]; then
+  log "osTicket est deja installe."
+  # Garde-fou : base peuplee mais config vierge = volumes desynchronises
+  if ! grep -q "$DB_NAME" "$WEBROOT/include/ost-config.php" 2>/dev/null; then
+    echo "================================================================"
+    log "ATTENTION : la base contient deja des tables, mais le fichier de"
+    log "config du webroot semble vierge. Les deux volumes sont desynchronises"
+    log "(volume applicatif recree et volume base conserve, ou l'inverse)."
+    log "SOLUTION : supprime l'application ET ses deux volumes, puis redeploie."
+    echo "================================================================"
+  fi
+  # Durcissement idempotent
+  if [ -d "$WEBROOT/setup" ]; then
+    log "Durcissement : suppression de setup/."
+    rm -rf "$WEBROOT/setup"
+  fi
+  [ -f "$WEBROOT/include/ost-config.php" ] && chmod 0644 "$WEBROOT/include/ost-config.php"
+
+else
+  log "Etat d'installation indetermine, on ne touche a rien."
+fi
+
+# --- 4) Permissions + lancement d'Apache ---
 chown -R www-data:www-data "$WEBROOT"
 exec "$@"

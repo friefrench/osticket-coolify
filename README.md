@@ -39,7 +39,7 @@ Ce dépôt **construit sa propre image** à partir de la release officielle d'os
 |---|---|
 | `Dockerfile` | PHP 8.2 + Apache + extensions osTicket, télécharge la release officielle `osTicket-v1.18.4.zip`. |
 | `ost-autoinstall.php` | Installe osTicket sans wizard : appelle directement la classe `Installer` native d'osTicket avec des variables d'environnement. Aucune logique SQL réécrite, donc robuste d'une version à l'autre. |
-| `docker-entrypoint.sh` | Au démarrage : sème le code dans un volume persistant, attend la base, installe si nécessaire, puis **supprime `setup/` et verrouille `include/ost-config.php` en 644**. Si l'installation échoue, il conserve `setup/` pour permettre une reprise. |
+| `docker-entrypoint.sh` | Au démarrage : sème le code dans un volume persistant, se connecte à la base, installe si nécessaire, puis **supprime `setup/` et verrouille `include/ost-config.php` en 644**. Auto-réparant : il décide en interrogeant la base (pas des fichiers), restaure `setup/` depuis l'image si une réinstallation est nécessaire, conserve `setup/` si l'installation échoue, et **écrit un diagnostic explicite dans les logs** en cas de problème de connexion à la base. |
 | `docker-compose.yaml` | Service `osticket` (build) + service `db` (MariaDB 11), avec volumes persistants pour le code et pour la base. |
 
 ### Déploiement sur Coolify
@@ -79,6 +79,28 @@ Pendant le premier déploiement, garde les logs ouverts : les lignes `[entrypoin
 
 Le code vit dans un volume persistant. Changer `OSTICKET_VERSION` dans le `Dockerfile` ne met pas à jour un volume déjà peuplé. Passe par l'upgrader web intégré d'osTicket, ou repars sur un nouveau volume.
 
+### Dépannage
+
+**Le déploiement réussit mais l'URL renvoie une erreur 500.**
+
+Une 500 signifie que la requête arrive jusqu'à PHP et que l'application plante. Ce n'est donc ni le domaine, ni Traefik, ni le firewall : ceux-là renvoient un 502, un 504 ou un timeout.
+
+Regarde les **logs du conteneur** `osticket` (onglet Logs de la ressource, pas l'onglet Deployments qui ne montre que le build). L'entrypoint écrit des lignes `[entrypoint]` et `[autoinstall]` qui expliquent ce qui s'est passé et posent le diagnostic tout seules.
+
+**Cause la plus fréquente : un volume de base de données rémanent.** MariaDB ne crée son utilisateur et son mot de passe qu'au tout premier démarrage sur un volume vide. Si tu changes `DB_PASSWORD` après un premier déploiement, la variable est ignorée et la base garde l'ancien mot de passe. osTicket ne peut plus se connecter, d'où la 500.
+
+Solution : supprime l'application **et ses volumes**, puis redéploie. Supprimer l'application seule ne suffit pas, Coolify conserve les volumes.
+
+```bash
+docker volume ls | grep -i ostic
+# une fois l'application arrêtée :
+docker volume rm <osticket_data> <osticket_db>
+```
+
+Règle simple : une fois le premier déploiement réussi, ne change plus `DB_PASSWORD`. Si tu dois le changer, supprime d'abord le volume de la base.
+
+**Faux amis.** `osticket_data: null` et `osticket_db: null` dans le compose généré par Coolify, c'est la syntaxe normale d'un volume nommé sans options. L'absence de quotes autour de `DB_HOST=db` n'est pas un problème non plus.
+
 ---
 
 ## ⛭ English
@@ -97,7 +119,7 @@ This repository **builds its own image** from the official osTicket release, the
 |---|---|
 | `Dockerfile` | PHP 8.2 + Apache + osTicket extensions, downloads the official `osTicket-v1.18.4.zip` release. |
 | `ost-autoinstall.php` | Installs osTicket without the wizard: calls osTicket's own `Installer` class directly with environment variables. No re-implemented SQL, so it stays robust across versions. |
-| `docker-entrypoint.sh` | On boot: seeds the code into a persistent volume, waits for the database, installs if needed, then **removes `setup/` and locks `include/ost-config.php` to 644**. If the install fails, it keeps `setup/` so you can retry. |
+| `docker-entrypoint.sh` | On boot: seeds the code into a persistent volume, connects to the database, installs if needed, then **removes `setup/` and locks `include/ost-config.php` to 644**. Self-healing: it decides by querying the database (not by checking files), restores `setup/` from the image when a reinstall is needed, keeps `setup/` if the install fails, and **prints an explicit diagnosis in the logs** on database connection problems. |
 | `docker-compose.yaml` | `osticket` service (build) + `db` service (MariaDB 11), with persistent volumes for the code and the database. |
 
 ### Deploying on Coolify
@@ -136,6 +158,28 @@ During the first deployment, keep the logs open: the `[entrypoint]` and `[autoin
 ### Updating osTicket
 
 The code lives in a persistent volume. Changing `OSTICKET_VERSION` in the `Dockerfile` will not update an already populated volume. Use osTicket's built-in web upgrader, or start from a fresh volume.
+
+### Troubleshooting
+
+**The deployment succeeds but the URL returns a 500 error.**
+
+A 500 means the request reaches PHP and the application crashes. So it is neither the domain, nor Traefik, nor the firewall: those return a 502, a 504 or a timeout.
+
+Check the **container logs** for `osticket` (the resource's Logs tab, not the Deployments tab, which only shows the build). The entrypoint prints `[entrypoint]` and `[autoinstall]` lines that explain what happened and diagnose the problem for you.
+
+**Most common cause: a leftover database volume.** MariaDB only creates its user and password on the very first start on an empty volume. If you change `DB_PASSWORD` after a first deployment, the variable is ignored and the database keeps the old password. osTicket can no longer connect, hence the 500.
+
+Fix: delete the application **and its volumes**, then redeploy. Deleting the application alone is not enough, Coolify keeps the volumes.
+
+```bash
+docker volume ls | grep -i ostic
+# once the application is stopped:
+docker volume rm <osticket_data> <osticket_db>
+```
+
+Simple rule: once the first deployment succeeds, do not change `DB_PASSWORD`. If you must, delete the database volume first.
+
+**Red herrings.** `osticket_data: null` and `osticket_db: null` in the compose file generated by Coolify is the normal syntax for a named volume with no options. The missing quotes around `DB_HOST=db` are not a problem either.
 
 ---
 
