@@ -22,13 +22,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #   && docker-php-ext-install imap \
 #   && rm -rf /var/lib/apt/lists/*
 
-# --- Reglages PHP recommandes ---
+# --- Reglages PHP recommandes + journalisation des erreurs ---
+# display_errors=Off (securite) mais log_errors=On : les fatals PHP partent dans
+# le log d'erreur Apache, qu'on redirige vers stderr juste apres. Resultat : la
+# vraie cause d'un 500 apparait dans les logs du conteneur (onglet Logs Coolify).
 RUN { \
       echo 'upload_max_filesize=25M'; \
       echo 'post_max_size=30M'; \
       echo 'memory_limit=256M'; \
       echo 'max_execution_time=60'; \
+      echo 'log_errors=On'; \
+      echo 'display_errors=Off'; \
+      echo 'error_reporting=E_ALL & ~E_DEPRECATED & ~E_NOTICE'; \
     } > /usr/local/etc/php/conf.d/osticket.ini
+
+# Rediriger les logs Apache (acces + erreurs) vers stdout/stderr du conteneur,
+# sinon ils restent dans /var/log/apache2/ et n'apparaissent nulle part.
+RUN ln -sf /dev/stdout /var/log/apache2/access.log \
+  && ln -sf /dev/stderr /var/log/apache2/error.log
 
 # --- Recuperation d'osTicket (release packagee officielle) ---
 ARG OSTICKET_VERSION=1.18.4
@@ -39,6 +50,18 @@ RUN curl -fsSL -o /tmp/osticket.zip \
   && cp -a /tmp/ost/upload/. /usr/src/osticket/ \
   && cp /usr/src/osticket/include/ost-sampleconfig.php /usr/src/osticket/include/ost-config.php \
   && rm -rf /tmp/osticket.zip /tmp/ost
+
+# --- Recap de build (visible dans les logs de deploiement Coolify) ---
+# Confirme que l'image est saine : version PHP, version osTicket, extensions.
+RUN echo "=========== RECAP BUILD osTicket ===========" \
+  && php -v | head -n1 \
+  && echo "osTicket version : ${OSTICKET_VERSION}" \
+  && printf 'Extensions requises : ' \
+  && for e in mysqli gd intl mbstring zip opcache; do \
+       if php -r "exit(extension_loaded('$e')?0:1);"; then printf '%s(ok) ' "$e"; else printf '%s(MANQUANT) ' "$e"; fi; \
+     done \
+  && echo \
+  && echo "============================================"
 
 # Script d'install headless, place dans le dossier setup/ d'osTicket
 COPY ost-autoinstall.php /usr/src/osticket/setup/ost-autoinstall.php

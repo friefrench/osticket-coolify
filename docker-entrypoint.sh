@@ -13,6 +13,18 @@ if [ ! -f "$WEBROOT/main.inc.php" ]; then
   cp -a "$SRC/." "$WEBROOT/"
 fi
 
+# --- Snapshot de demarrage (baseline de diagnostic dans les logs) ---
+log "PHP $(php -r 'echo PHP_VERSION;' 2>/dev/null) | webroot=$WEBROOT | cible base: host=$DB_HOST db=$DB_NAME user=$DB_USER prefix=$PREFIX"
+missing=""
+for e in mysqli gd intl mbstring zip opcache; do
+  php -r "exit(extension_loaded('$e')?0:1);" 2>/dev/null || missing="$missing $e"
+done
+if [ -n "$missing" ]; then
+  log "ATTENTION : extensions PHP manquantes :$missing"
+else
+  log "Extensions PHP requises : toutes presentes."
+fi
+
 # --- 2) Connexion a la base (on distingue "pas encore prete" de "mot de passe faux") ---
 db_ok=0
 db_error=""
