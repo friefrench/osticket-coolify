@@ -34,6 +34,10 @@ i=0
 log "Connexion a la base ($DB_HOST) ..."
 while [ "$i" -lt 60 ]; do
   if out=$(php -r '
+        // PHP 8.1+ : mysqli lance des exceptions par defaut au lieu de
+        // renvoyer false ; on revient au mode silencieux pour recuperer
+        // le message (sinon la detection "Access denied" ne voit rien).
+        mysqli_report(MYSQLI_REPORT_OFF);
         $c = @mysqli_connect(getenv("DB_HOST"), getenv("DB_USER"), getenv("DB_PASSWORD"), getenv("DB_NAME"));
         if ($c) { echo "OK"; exit(0); }
         echo mysqli_connect_error();
@@ -82,6 +86,7 @@ log "Base joignable."
 
 # --- 3) osTicket est-il deja installe ? (on interroge la base, pas des fichiers) ---
 tables=$(php -r '
+  mysqli_report(MYSQLI_REPORT_OFF);
   $c = @mysqli_connect(getenv("DB_HOST"), getenv("DB_USER"), getenv("DB_PASSWORD"), getenv("DB_NAME"));
   if (!$c) { echo "err"; exit; }
   $p = getenv("TABLE_PREFIX") ?: "ost_";
