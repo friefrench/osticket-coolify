@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libicu-dev libonig-dev libzip-dev \
   && docker-php-ext-configure gd --with-freetype --with-jpeg \
   && docker-php-ext-install -j"$(nproc)" mysqli gd intl mbstring opcache zip \
+  && docker-php-ext-enable opcache \
   && a2enmod rewrite \
   && rm -rf /var/lib/apt/lists/*
 
@@ -57,7 +58,7 @@ RUN echo "=========== RECAP BUILD osTicket ===========" \
   && php -v | head -n1 \
   && echo "osTicket version : ${OSTICKET_VERSION}" \
   && printf 'Extensions requises : ' \
-  && for e in mysqli gd intl mbstring zip opcache; do \
+  && for e in mysqli gd intl mbstring zip "Zend OPcache"; do \
        if php -r "exit(extension_loaded('$e')?0:1);"; then printf '%s(ok) ' "$e"; else printf '%s(MANQUANT) ' "$e"; fi; \
      done \
   && echo \
@@ -65,6 +66,12 @@ RUN echo "=========== RECAP BUILD osTicket ===========" \
 
 # Script d'install headless, place dans le dossier setup/ d'osTicket
 COPY ost-autoinstall.php /usr/src/osticket/setup/ost-autoinstall.php
+
+# Relie les identifiants base de ost-config.php a l'environnement : l'installeur
+# osTicket ecrit le mot de passe sans echappement fiable, un mot de passe a
+# caracteres speciaux est stocke abime (install OK mais runtime en Access
+# denied -> 500). Appele par l'entrypoint a chaque boot, idempotent.
+COPY ost-config-rewrite.php /usr/local/bin/ost-config-rewrite.php
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

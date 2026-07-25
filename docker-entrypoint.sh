@@ -16,9 +16,11 @@ fi
 # --- Snapshot de demarrage (baseline de diagnostic dans les logs) ---
 log "PHP $(php -r 'echo PHP_VERSION;' 2>/dev/null) | webroot=$WEBROOT | cible base: host=$DB_HOST db=$DB_NAME user=$DB_USER prefix=$PREFIX"
 missing=""
-for e in mysqli gd intl mbstring zip opcache; do
+for e in mysqli gd intl mbstring zip; do
   php -r "exit(extension_loaded('$e')?0:1);" 2>/dev/null || missing="$missing $e"
 done
+# opcache s'enregistre sous le nom "Zend OPcache", pas "opcache"
+php -r 'exit(extension_loaded("Zend OPcache")?0:1);' 2>/dev/null || missing="$missing opcache"
 if [ -n "$missing" ]; then
   log "ATTENTION : extensions PHP manquantes :$missing"
 else
@@ -102,6 +104,9 @@ if [ "$tables" = "no" ]; then
   if ( cd "$WEBROOT/setup" && php ost-autoinstall.php ); then
     log "Installation reussie. Durcissement : suppression de setup/, config en 644."
     rm -rf "$WEBROOT/setup"
+    # L'installeur ecrit le mot de passe en dur sans echappement fiable : on
+    # relie la config a l'environnement pour eviter toute divergence.
+    php /usr/local/bin/ost-config-rewrite.php
     chmod 0644 "$WEBROOT/include/ost-config.php"
   else
     log "Installation ECHOUEE (voir les lignes [autoinstall] ci-dessus)."
@@ -124,6 +129,9 @@ elif [ "$tables" = "yes" ]; then
     log "Durcissement : suppression de setup/."
     rm -rf "$WEBROOT/setup"
   fi
+  # Auto-reparation : si la config porte un mot de passe abime (ecrit sans
+  # echappement fiable par l'installeur), on la relie a l'environnement.
+  [ -f "$WEBROOT/include/ost-config.php" ] && php /usr/local/bin/ost-config-rewrite.php
   [ -f "$WEBROOT/include/ost-config.php" ] && chmod 0644 "$WEBROOT/include/ost-config.php"
 
 else
